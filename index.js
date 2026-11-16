@@ -56,6 +56,7 @@ const REPLY_DELAY_MAX = 5000;
 
 const humanPause = {};
 const botSentIds = new Set();
+let pairingCodeRequested = false;
 
 function clean(text) {
   return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -172,10 +173,29 @@ const client = new Client({
   puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
 });
 
-client.on('qr', (qr) => {
+client.on('qr', async (qr) => {
   console.log('\n=== QR CODE SCAN KAREIN ===');
   console.log('WhatsApp App kholain > Linked Devices > Link a Device > Ye QR scan karein');
   qrcode.generate(qr, { small: true });
+  // Pairing code - QR scan na ho sake to code se link karein.
+  // WhatsApp > Linked Devices > Link a Device > Link with phone number
+  // par ye 8-character code likhein. Sirf ek dafa request karein.
+  if (!pairingCodeRequested) {
+    pairingCodeRequested = true;
+    try {
+      const code = await client.requestPairingCode('923024594578');
+      console.log('\n=== PAIRING CODE ===');
+      console.log('Pairing code: ' + code);
+      console.log('WhatsApp > Linked Devices > Link a Device > Link with phone number par ye code likhein.');
+    } catch (e) {
+      console.log('Pairing code error:', e.message);
+    }
+  }
+});
+
+client.on('code', (code) => {
+  console.log('\n=== PAIRING CODE ===');
+  console.log('Pairing code: ' + code);
 });
 
 client.on('ready', () => {
