@@ -77,7 +77,7 @@ const REPLY_DELAY_MAX = 5000;
 // v2.3: Real AI - Gemini (free) - key Replit Secrets me GEMINI_API_KEY naam se
 // Key na ho ya AI fail ho jaye to neeche wala rule-based freeReply chalega
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
 async function aiReply(raw) {
   if (!GEMINI_API_KEY) return null;
