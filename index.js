@@ -18,7 +18,10 @@
  *  - Real AI attach: Gemini (free) via GEMINI_API_KEY secret.
  *    Har message ka jawab pehle Gemini se, fail ho to rule-based.
  *  - "thoda detail mein batayein" wala lazy jawab bilkul band.
- * v2.4 (2026-11-16 21:40 PKT):
+ * v2.4.2 (2026-11-16 22:06 PKT):
+ *  - Gemini: 3.8-flash busy (503) ho to 2.5-flash try karo, har model 2 dafa retry.
+ *  - Time intent: asli Pakistan time batayega. "Ap kon ho" intent fix.
+ *  - CapCut link intent + behtar short-message replies (bewaqoof "aap sahi keh rahe ho" khatam).
  *  - Link intents: ChatGPT, Gemini, YouTube, Google ke link seedha dega.
  *  - Lazy fallback ("aur kya kehna chahte ho") khatam - seedha jawab.
  *  - Pairing number Replit secret PAIRING_NUMBER se (Business number ke liye).
@@ -78,14 +81,15 @@ const REPLY_DELAY_MAX = 5000;
 // Key na ho ya AI fail ho jaye to neeche wala rule-based freeReply chalega
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+// v2.4.2: 3.8-flash busy ho (503) to 2.5-flash try karo - dono Google ke naye models
+const GEMINI_MODELS = [GEMINI_MODEL, 'gemini-2.5-flash'];
 
-async function aiReply(raw) {
-  if (!GEMINI_API_KEY) return null;
+async function callGemini(model, raw) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -98,14 +102,29 @@ async function aiReply(raw) {
       }
     );
     clearTimeout(timer);
-    if (!res.ok) { console.log('Gemini API error:', res.status); return null; }
+    if (!res.ok) { console.log('Gemini API error:', model, res.status); return { status: res.status, text: null }; }
     const data = await res.json();
     const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
-    return text ? String(text).trim() : null;
+    return { status: 200, text: text ? String(text).trim() : null };
   } catch (e) {
-    console.log('Gemini error:', e.message);
-    return null;
+    clearTimeout(timer);
+    console.log('Gemini error:', model, e.message);
+    return { status: 0, text: null };
   }
+}
+
+async function aiReply(raw) {
+  if (!GEMINI_API_KEY) return null;
+  for (const model of GEMINI_MODELS) {
+    // har model ko 2 dafa try karo (503 busy ho to 3 second ruk kar dobara)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = await callGemini(model, raw);
+      if (r.text) return r.text;
+      if (r.status === 503 && attempt === 1) { await sleep(3000); continue; }
+      break;
+    }
+  }
+  return null;
 }
 
 const humanPause = {};
@@ -166,8 +185,13 @@ function freeReply(raw, text) {
   if (has(text, 'kya kar rahe', 'kya kar raha', 'what are you doing', 'kya ho raha')) {
     return 'Main yahan aap se baat kar raha hoon. Aap batayein, aap kya kar rahe ho? Aaj ka din kaisa guzra?';
   }
-  if (has(text, 'tum kaun', 'aap kaun', 'who are you', 'apka naam', 'your name', 'tumhara naam', 'aapka naam')) {
+  if (has(text, 'tum kaun', 'aap kaun', 'ap kon', 'tum kon', 'kon ho', 'who are you', 'apka naam', 'your name', 'tumhara naam', 'aapka naam')) {
     return 'Main Shahbaz hoon. Aap se baat kar raha hoon, aap batayein, aap kaun hain? Aapka naam kya hai?';
+  }
+  // v2.4.2: time pooche to asli time batao (Pakistan time)
+  if (has(text, 'time kia', 'time kya', 'time ho raha', 'kitne baj', 'kitna time', 'waqt kia', 'waqt kya', 'what time', 'time bata')) {
+    const now = new Date().toLocaleTimeString('en-PK', { timeZone: 'Asia/Karachi', hour: 'numeric', minute: '2-digit' });
+    return 'Abhi Pakistan me ' + now + ' ho raha hai.';
   }
   if (has(text, 'good morning', 'subah bakhair', 'good night', 'shab bakhair')) {
     if (has(text, 'night', 'shab')) {
@@ -214,16 +238,17 @@ function freeReply(raw, text) {
   if (has(text, 'google')) {
     return 'Google ka link ye hai: https://www.google.com — is par click karo, jo chahiye search karo.';
   }
-  if (has(text, 'link bhej', 'link do', 'link chahiye')) {
-    return 'Kaunsa link chahiye? Agar ChatGPT ka chahiye to ye hai: https://chatgpt.com';
+  if (has(text, 'capcut', 'cap cut')) {
+    return 'CapCut ka link ye hai: https://www.capcut.com — is par click karo. App chahiye to Play Store par "CapCut" likh kar download kar lo.';
+  }
+  if (has(text, 'link bhej', 'link do', 'link chahiye', 'link bjo', 'ka link')) {
+    return 'Kaunsa link chahiye? Agar ChatGPT ka chahiye to ye hai: https://chatgpt.com — Gemini ka: https://gemini.google.com — CapCut ka: https://www.capcut.com — YouTube ka: https://www.youtube.com';
   }
   const replies = [
-    'Haan, samajh gaya. Ye baat theek hai.',
-    'Theek hai, aap ki baat samajh aa gayi. Main yahin hoon.',
-    'Haan, ye baat to theek hai. Aap ne sahi kaha.',
-    'Ok, samajh gaya. Main aap ki baat sun raha hoon.',
-    'Haan, aap sahi keh rahe ho.',
-    'Acha, ye baat samajh aa gayi.',
+    'Haan, bolo, main sun raha hoon.',
+    'Theek hai, aage bolo.',
+    'Haan, main yahin hoon, bolo.',
+    'Haan, bolo, kya baat hai?',
   ];
   if (raw.length < 25) {
     return replies[Math.floor(Math.random() * replies.length)];
