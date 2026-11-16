@@ -18,6 +18,10 @@
  *  - Real AI attach: Gemini (free) via GEMINI_API_KEY secret.
  *    Har message ka jawab pehle Gemini se, fail ho to rule-based.
  *  - "thoda detail mein batayein" wala lazy jawab bilkul band.
+ * v2.4.3 (2026-11-16 22:15 PKT):
+ *  - FAST: intent (time/link/kon ho/kahan ho) pehle, AI ka wait nahi; delay 0.8-1.5s; AI timeout 8s.
+ *  - Multi-AI chain: Gemini 3.8-flash -> Pollinations (free, bina key) -> DeepSeek ->
+ *    Groq -> OpenRouter free -> ChatGPT (paid, key ho to). Key wale step bina key skip.
  * v2.4.2 (2026-11-16 22:06 PKT):
  *  - Gemini: 3.8-flash busy (503) ho to 2.5-flash try karo, har model 2 dafa retry.
  *  - Time intent: asli Pakistan time batayega. "Ap kon ho" intent fix.
@@ -75,18 +79,53 @@ const qrcode = require('qrcode-terminal');
 const BOT_NAME = 'Shahbaz';
 const REPLY_TO_GROUPS = false;
 const HUMAN_PAUSE_MINUTES = 5;
-const REPLY_DELAY_MIN = 2000;
-const REPLY_DELAY_MAX = 5000;
+const REPLY_DELAY_MIN = 800;
+const REPLY_DELAY_MAX = 1500;
 // v2.3: Real AI - Gemini (free) - key Replit Secrets me GEMINI_API_KEY naam se
 // Key na ho ya AI fail ho jaye to neeche wala rule-based freeReply chalega
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-// v2.4.2: 3.8-flash busy ho (503) to 2.5-flash try karo - dono Google ke naye models
-const GEMINI_MODELS = [GEMINI_MODEL, 'gemini-2.5-flash'];
+// v2.4.3: sirf 3.8-flash (2.5-flash band hai, 404). AI chain: Gemini -> Pollinations
+// (free, bina key) -> DeepSeek -> Groq -> OpenRouter -> ChatGPT (paid, key ho to).
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const AI_SYSTEM = 'You are Shahbaz, chatting with a friend on his personal WhatsApp in Roman English (Latin script, simple English mixed with Roman Urdu, the way Shahbaz speaks). Reply naturally like a real friend: short, warm, direct. Never repeat the user message back, never quote what they said, never say "tell me in more detail". Answer the message itself, improvise sensibly when it is unclear. Keep replies short, 1-3 lines usually. Never mention you are an AI, a bot, Gemini or ChatGPT.';
+
+async function postChat(url, key, model, raw, extraHeaders) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key }, extraHeaders || {}),
+      body: JSON.stringify({
+        model: model,
+        messages: [
+          { role: 'system', content: AI_SYSTEM },
+          { role: 'user', content: raw }
+        ],
+        max_tokens: 200,
+        temperature: 0.8
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    if (!res.ok) { console.log('AI error:', url.split('/')[2], model, res.status); return null; }
+    const data = await res.json();
+    const text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+    return text ? String(text).trim() : null;
+  } catch (e) {
+    clearTimeout(timer);
+    console.log('AI error:', url.split('/')[2], model, e.message);
+    return null;
+  }
+}
 
 async function callGemini(model, raw) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
@@ -94,7 +133,7 @@ async function callGemini(model, raw) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: 'You are Shahbaz, chatting with a friend on his personal WhatsApp in Roman English (Latin script, simple English mixed with Roman Urdu, the way Shahbaz speaks). Reply naturally like a real friend: short, warm, direct. Never repeat the user message back, never quote what they said, never say "tell me in more detail". Answer the message itself, improvise sensibly when it is unclear. Keep replies short, 1-3 lines usually. Never mention you are an AI, a bot, Gemini or ChatGPT.' }] },
+          system_instruction: { parts: [{ text: AI_SYSTEM }] },
           contents: [{ parts: [{ text: raw }] }],
           generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
         }),
@@ -102,27 +141,63 @@ async function callGemini(model, raw) {
       }
     );
     clearTimeout(timer);
-    if (!res.ok) { console.log('Gemini API error:', model, res.status); return { status: res.status, text: null }; }
+    if (!res.ok) { console.log('Gemini API error:', model, res.status); return null; }
     const data = await res.json();
     const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
-    return { status: 200, text: text ? String(text).trim() : null };
+    return text ? String(text).trim() : null;
   } catch (e) {
     clearTimeout(timer);
     console.log('Gemini error:', model, e.message);
-    return { status: 0, text: null };
+    return null;
+  }
+}
+
+// Pollinations - free AI, bina key ke, aakhri sahara
+async function pollinationsReply(raw) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const prompt = AI_SYSTEM + '\n\nFriend says: ' + raw + '\nReply in Roman English, short, 1-3 lines:';
+    const res = await fetch('https://text.pollinations.ai/' + encodeURIComponent(prompt) + '?model=openai', { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) { console.log('Pollinations error:', res.status); return null; }
+    const text = await res.text();
+    return text ? text.trim().slice(0, 500) : null;
+  } catch (e) {
+    clearTimeout(timer);
+    console.log('Pollinations error:', e.message);
+    return null;
   }
 }
 
 async function aiReply(raw) {
-  if (!GEMINI_API_KEY) return null;
-  for (const model of GEMINI_MODELS) {
-    // har model ko 2 dafa try karo (503 busy ho to 3 second ruk kar dobara)
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const r = await callGemini(model, raw);
-      if (r.text) return r.text;
-      if (r.status === 503 && attempt === 1) { await sleep(3000); continue; }
-      break;
-    }
+  // 1. Gemini (free, key lagi hai)
+  if (GEMINI_API_KEY) {
+    const g = await callGemini(GEMINI_MODEL, raw);
+    if (g) return g;
+  }
+  // 2. Pollinations (free, bina key) - foran try karo
+  const p = await pollinationsReply(raw);
+  if (p) return p;
+  // 3. DeepSeek (key ho to)
+  if (DEEPSEEK_API_KEY) {
+    const d = await postChat('https://api.deepseek.com/v1/chat/completions', DEEPSEEK_API_KEY, 'deepseek-chat', raw);
+    if (d) return d;
+  }
+  // 4. Groq (free tier, key ho to - bohat fast)
+  if (GROQ_API_KEY) {
+    const gq = await postChat('https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, 'llama-3.3-70b-versatile', raw);
+    if (gq) return gq;
+  }
+  // 5. OpenRouter free models (key ho to)
+  if (OPENROUTER_API_KEY) {
+    const or = await postChat('https://openrouter.ai/api/v1/chat/completions', OPENROUTER_API_KEY, 'meta-llama/llama-3.3-70b-instruct:free', raw, { 'HTTP-Referer': 'https://replit.com', 'X-Title': 'Shahbaz Bot' });
+    if (or) return or;
+  }
+  // 6. ChatGPT (paid, key ho to)
+  if (OPENAI_API_KEY) {
+    const c = await postChat('https://api.openai.com/v1/chat/completions', OPENAI_API_KEY, 'gpt-4o-mini', raw);
+    if (c) return c;
   }
   return null;
 }
@@ -175,7 +250,9 @@ async function sendReply(msg, text) {
 // ============================================================
 // PERSONAL FREE CHAT - KOI BHI MESSAGE, KOI BHI BAAT
 // ============================================================
-function freeReply(raw, text) {
+// v2.4.3: intentReply - time/link/kon ho/kahan ho jaise sawal ka jawab
+// AI ka wait kiye baghair foran dega (fast reply). Koi intent na mile to null.
+function intentReply(text) {
   if (has(text, 'kya haal', 'kesay ho', 'kaise ho', 'how are you', 'haal kaisa', 'kese ho', 'kaisa hai')) {
     return 'Alhamdulillah, main theek hoon! Aap sunayein, aap kaise hain? Aaj kya chal raha hai, sab theek hai na?';
   }
@@ -244,6 +321,12 @@ function freeReply(raw, text) {
   if (has(text, 'link bhej', 'link do', 'link chahiye', 'link bjo', 'ka link')) {
     return 'Kaunsa link chahiye? Agar ChatGPT ka chahiye to ye hai: https://chatgpt.com — Gemini ka: https://gemini.google.com — CapCut ka: https://www.capcut.com — YouTube ka: https://www.youtube.com';
   }
+  return null;
+}
+
+function freeReply(raw, text) {
+  const intent = intentReply(text);
+  if (intent) return intent;
   const replies = [
     'Haan, bolo, main sun raha hoon.',
     'Theek hai, aage bolo.',
@@ -276,7 +359,12 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Har aur message - pehle real AI (Gemini), fail ho to rule-based freeReply
+  // v2.4.3 FAST: pehle intent (time/link/kon ho) foran, phir AI, phir generic
+  const intent = intentReply(text);
+  if (intent) {
+    await sendReply(msg, intent);
+    return;
+  }
   const smart = await aiReply(raw);
   if (smart) {
     await sendReply(msg, smart);
