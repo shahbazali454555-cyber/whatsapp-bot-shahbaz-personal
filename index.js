@@ -10,6 +10,14 @@
  *  - SIRF naye messages ka reply (Shahbaz ka 20:19 PKT rule):
  *    bot READY hone se pehle ke purane messages aur dobara aane
  *    wale messages ignore, har message ka jawab sirf ek dafa.
+ * v2.2 (2026-11-16 21:21 PKT):
+ *  - Message ko dobara repeat NAHI karna - "Aap ne X likha hai"
+ *    wala echo band (Shahbaz ka 21:21 PKT rule). Seedha natural
+ *    jawab dena. "Kedar ho" bhi kahan-ho intent mein shamil.
+ * v2.3 (2026-11-16 21:22 PKT):
+ *  - Real AI attach: Gemini (free) via GEMINI_API_KEY secret.
+ *    Har message ka jawab pehle Gemini se, fail ho to rule-based.
+ *  - "thoda detail mein batayein" wala lazy jawab bilkul band.
  * Ye bot Shahbaz ke PERSONAL WhatsApp number par khud reply dega.
  * Jo bhi banda, kisi bhi number se, koi bhi message bheje,
  * bot us ko apni marzi se free personal reply dega,
@@ -62,6 +70,39 @@ const REPLY_TO_GROUPS = false;
 const HUMAN_PAUSE_MINUTES = 5;
 const REPLY_DELAY_MIN = 2000;
 const REPLY_DELAY_MAX = 5000;
+// v2.3: Real AI - Gemini (free) - key Replit Secrets me GEMINI_API_KEY naam se
+// Key na ho ya AI fail ho jaye to neeche wala rule-based freeReply chalega
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+
+async function aiReply(raw) {
+  if (!GEMINI_API_KEY) return null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: 'You are Shahbaz, chatting with a friend on his personal WhatsApp in Roman English (Latin script, simple English mixed with Roman Urdu, the way Shahbaz speaks). Reply naturally like a real friend: short, warm, direct. Never repeat the user message back, never quote what they said, never say "tell me in more detail". Answer the message itself, improvise sensibly when it is unclear. Keep replies short, 1-3 lines usually. Never mention you are an AI, a bot, Gemini or ChatGPT.' }] },
+          contents: [{ parts: [{ text: raw }] }],
+          generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
+        }),
+        signal: controller.signal
+      }
+    );
+    clearTimeout(timer);
+    if (!res.ok) { console.log('Gemini API error:', res.status); return null; }
+    const data = await res.json();
+    const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+    return text ? String(text).trim() : null;
+  } catch (e) {
+    console.log('Gemini error:', e.message);
+    return null;
+  }
+}
 
 const humanPause = {};
 const botSentIds = new Set();
@@ -115,7 +156,7 @@ function freeReply(raw, text) {
   if (has(text, 'kya haal', 'kesay ho', 'kaise ho', 'how are you', 'haal kaisa', 'kese ho', 'kaisa hai')) {
     return 'Alhamdulillah, main theek hoon! Aap sunayein, aap kaise hain? Aaj kya chal raha hai, sab theek hai na?';
   }
-  if (has(text, 'kahan ho', 'kidhar ho', 'where are you', 'kahan par ho', 'kaha ho')) {
+  if (has(text, 'kahan ho', 'kidhar ho', 'kedar ho', 'kidar ho', 'where are you', 'kahan par ho', 'kaha ho', 'kedar ha', 'kidhar ha')) {
     return 'Main yahin hoon, aapke message ka wait kar raha tha. Aap batayein, aap kahan ho? Ghar par ho ya bahar?';
   }
   if (has(text, 'kya kar rahe', 'kya kar raha', 'what are you doing', 'kya ho raha')) {
@@ -155,14 +196,20 @@ function freeReply(raw, text) {
     return 'Sab theek hai, Alhamdulillah. Aap sunayein, aapke paas koi nayi baat hai? Aaj kya kiya aap ne?';
   }
 
+  // v2.2: Message ko dobara repeat NAHI karna - seedha natural jawab dena
+  // ("Aap ne X likha hai" wala echo band - Shahbaz ka 21:21 PKT rule)
+  // v2.3: "thoda detail mein batayein" wala lazy jawab bhi band -
+  // har message ka seedha, natural jawab dena, jaise ek dost baat karta hai
   const replies = [
-    `Acha, samajh gaya. Aap ne kaha: "${raw}"\n\nYe bohat interesting baat hai. Aap thora detail mein batayein, main aapko behtar jawab doon ga. Aap kya chahte ho, is par baat karein ya kuch aur poochna hai?`,
-    `Haan, ye baat to theek hai. "${raw}" par main ye kahoon ga ke aap bilkul sahi soch rahe ho.\n\nAap aur batayein, aapke mind mein aur kya hai? Main sun raha hoon, aap freely baat karein.`,
-    `Interesting! Aap ne "${raw}" likha hai.\n\nMujhe ye jan kar acha laga. Aap is ke baare mein aur kya kehna chahte ho? Main aapki baat ko samajh kar jawab de raha hoon, aap bas aise hi baat karte raho.`,
-    'Ok, main samajh gaya. Aap ki baat ka matlab clear hai.\n\nAap batayein, is mein main aapki kya madad kar sakta hoon? Ya bas aise hi baat karni hai? Dono theek hai, main yahin hoon.',
+    'Haan, samajh gaya. Aap batao, is ke baare mein aur kya kehna chahte ho? Main sun raha hoon.',
+    'Theek hai, aap ki baat samajh aa gayi. Aur batayein, aap ke mind mein aur kya hai? Main yahin hoon, aap freely baat karein.',
+    'Haan, ye baat to theek hai. Aap is par aur kya kehna chahte ho? Main aap ki baat sun raha hoon, aap bas aise hi baat karte raho.',
+    'Ok, main samajh gaya. Aap batayein, is mein main aap ki kya madad kar sakta hoon? Ya bas aise hi baat karni hai? Dono theek hai, main yahin hoon.',
+    'Haan, aap sahi keh rahe ho. Aap aur batao, kya haal hai? Aaj kya chal raha hai aap ke saath?',
+    'Acha, ye to interesting baat hai. Aap is ke baare mein aur batayein, main sun raha hoon.',
   ];
   if (raw.length < 25) {
-    return `Haan, batao. Aap ne "${raw}" likha hai.\n\nAap thora detail mein batayein, taake main aapko sahi aur acha jawab de sakoon. Main yahin hoon, aap freely baat karein.`;
+    return replies[Math.floor(Math.random() * replies.length)];
   }
   return replies[Math.floor(Math.random() * replies.length)];
 }
@@ -187,7 +234,12 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Har aur message - free personal chat, kisi bhi number se
+  // Har aur message - pehle real AI (Gemini), fail ho to rule-based freeReply
+  const smart = await aiReply(raw);
+  if (smart) {
+    await sendReply(msg, smart);
+    return;
+  }
   await sendReply(msg, freeReply(raw, text));
 }
 
