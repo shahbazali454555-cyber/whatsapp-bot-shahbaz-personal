@@ -1,6 +1,10 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.0 SPEED version PERSONAL ONLY (heavy version)
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.1 version PERSONAL ONLY (heavy version)
  * ================================================================
+ * v12.1 (2026-11-17 01:00 PKT) - greeting-follow-up fix:
+ * - Rule-based intents (no AI wait) for thk/theek and ap kasa/kaise/kese/kesy ho,
+ *   matched anywhere in the message, so the fallback never fires for greetings.
+ *   All v12.0 behaviour unchanged (delay 0, AI timeout 3s, Pollinations first).
  * v12.0 SPEED (2026-11-17 00:38 PKT) - speed release:
  * - No artificial reply delay (REPLY_DELAY 0); AI timeout 12s -> 3s;
  *   Pollinations-default FIRST, then Gemini, then Pollinations-openai;
@@ -379,6 +383,16 @@ function intentReply(text) {
     }
     return 'Abhi Pakistan me ' + now + ' ho raha hai.';
   }
+  // v12.1: greeting follow-ups, matched anywhere in the message (no AI wait).
+  // How-are-you first, so a combined 'Me thk ho ap kasa ho' answers as
+  // 'Me bhi thk ho, ap sunao?' instead of the thk-only reply.
+  if (has(text, 'kasa ho', 'kesy ho', 'kaisa ho', 'kaise ho', 'kese ho', 'kesay ho', 'kasa hai', 'kesy hai', 'kaisa hai', 'kya haal', 'kia haal', 'haal kaisa', 'haal kesa', 'how are you')) {
+    return 'Me bhi thk ho, ap sunao?';
+  }
+  // v12.1: 'thk / thik / theek' - user is fine, reply short, no AI wait.
+  if (has(text, 'thk', 'thik', 'theek')) {
+    return 'Acha, aur sunao?';
+  }
   if (has(text, 'kya haal', 'kesay ho', 'kaise ho', 'how are you', 'haal kaisa', 'kese ho', 'kaisa hai')) {
     return 'Alhamdulillah, main theek hoon.';
   }
@@ -418,7 +432,7 @@ function intentReply(text) {
   if (has(text, 'ok', 'theek hai', 'acha', 'sahi hai', 'han', 'haan', 'yes')) {
     return 'Theek hai.';
   }
-  if (has(text, 'aur sunao', 'aur batao', 'kya chal raha')) {
+  if (has(text, 'aur sunao', 'aur batao', 'kya chal raha', 'kia chal raha', 'chal raha hai')) {
     return 'Sab theek hai, Alhamdulillah.';
   }
 
@@ -503,10 +517,10 @@ async function handleMessage(msg) {
 }
 
 async function runSelfTest() {
-  console.log('=== v11.0 SELFTEST ===');
+  console.log('=== v12.1 SELFTEST ===');
   const p = karachiParts(new Date());
   console.log('Karachi today (live):', p.weekday, p.day, p.month, p.year);
-  const tests = ['Kal kia ha', 'Mana bola Kal kai din ha', 'Kal kya hai', 'Kal konsa din hai', 'Aaj kia din hai', 'Aaj date kia hai', 'Kal date kia hai', 'Parso kia din hai', 'Lahore me time kia ho raha hai', 'kahan ho', 'kon ho'];
+  const tests = ['Kal kia ha', 'Mana bola Kal kai din ha', 'Kal kya hai', 'Kal konsa din hai', 'Aaj kia din hai', 'Aaj date kia hai', 'Kal date kia hai', 'Parso kia din hai', 'Lahore me time kia ho raha hai', 'kahan ho', 'kon ho', 'Thk', 'Me thk ho ap kasa ho', 'ap kasa ho', 'ap kesy ho', 'main theek hoon', 'aur sunao', 'kia chal raha hai', 'kya haal hai', 'haal kaisa hai'];
   for (const t of tests) {
     const out = intentReply(clean(t)) || '(no intent -> AI)';
     console.log('IN:', t, '=> OUT:', out);
