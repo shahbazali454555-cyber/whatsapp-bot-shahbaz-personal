@@ -18,6 +18,10 @@
  *  - Real AI attach: Gemini (free) via GEMINI_API_KEY secret.
  *    Har message ka jawab pehle Gemini se, fail ho to rule-based.
  *  - "thoda detail mein batayein" wala lazy jawab bilkul band.
+ * v2.4 (2026-11-16 21:40 PKT):
+ *  - Link intents: ChatGPT, Gemini, YouTube, Google ke link seedha dega.
+ *  - Lazy fallback ("aur kya kehna chahte ho") khatam - seedha jawab.
+ *  - Pairing number Replit secret PAIRING_NUMBER se (Business number ke liye).
  * Ye bot Shahbaz ke PERSONAL WhatsApp number par khud reply dega.
  * Jo bhi banda, kisi bhi number se, koi bhi message bheje,
  * bot us ko apni marzi se free personal reply dega,
@@ -196,17 +200,30 @@ function freeReply(raw, text) {
     return 'Sab theek hai, Alhamdulillah. Aap sunayein, aapke paas koi nayi baat hai? Aaj kya kiya aap ne?';
   }
 
-  // v2.2: Message ko dobara repeat NAHI karna - seedha natural jawab dena
-  // ("Aap ne X likha hai" wala echo band - Shahbaz ka 21:21 PKT rule)
-  // v2.3: "thoda detail mein batayein" wala lazy jawab bhi band -
-  // har message ka seedha, natural jawab dena, jaise ek dost baat karta hai
+  // v2.4: "aur kya kehna chahte ho" wala lazy sawal bilkul band (21:36 PKT screenshot) -
+  // har message ka seedha jawab dena, sawal wapas nahi karna
+  if (has(text, 'chatgpt', 'chat gpt')) {
+    return 'ChatGPT ka link ye hai: https://chatgpt.com — is par click karo, wahan account bana kar baat karo. App chahiye to Play Store par "ChatGPT" likh kar download kar lo.';
+  }
+  if (has(text, 'gemini')) {
+    return 'Gemini ka link ye hai: https://gemini.google.com — is par click karo, apne Google account se sign in kar ke baat karo. App chahiye to Play Store par "Gemini" likh kar download kar lo.';
+  }
+  if (has(text, 'youtube')) {
+    return 'YouTube ka link ye hai: https://www.youtube.com — is par click karo. App chahiye to Play Store par "YouTube" likh kar download kar lo.';
+  }
+  if (has(text, 'google')) {
+    return 'Google ka link ye hai: https://www.google.com — is par click karo, jo chahiye search karo.';
+  }
+  if (has(text, 'link bhej', 'link do', 'link chahiye')) {
+    return 'Kaunsa link chahiye? Agar ChatGPT ka chahiye to ye hai: https://chatgpt.com';
+  }
   const replies = [
-    'Haan, samajh gaya. Aap batao, is ke baare mein aur kya kehna chahte ho? Main sun raha hoon.',
-    'Theek hai, aap ki baat samajh aa gayi. Aur batayein, aap ke mind mein aur kya hai? Main yahin hoon, aap freely baat karein.',
-    'Haan, ye baat to theek hai. Aap is par aur kya kehna chahte ho? Main aap ki baat sun raha hoon, aap bas aise hi baat karte raho.',
-    'Ok, main samajh gaya. Aap batayein, is mein main aap ki kya madad kar sakta hoon? Ya bas aise hi baat karni hai? Dono theek hai, main yahin hoon.',
-    'Haan, aap sahi keh rahe ho. Aap aur batao, kya haal hai? Aaj kya chal raha hai aap ke saath?',
-    'Acha, ye to interesting baat hai. Aap is ke baare mein aur batayein, main sun raha hoon.',
+    'Haan, samajh gaya. Ye baat theek hai.',
+    'Theek hai, aap ki baat samajh aa gayi. Main yahin hoon.',
+    'Haan, ye baat to theek hai. Aap ne sahi kaha.',
+    'Ok, samajh gaya. Main aap ki baat sun raha hoon.',
+    'Haan, aap sahi keh rahe ho.',
+    'Acha, ye baat samajh aa gayi.',
   ];
   if (raw.length < 25) {
     return replies[Math.floor(Math.random() * replies.length)];
@@ -258,7 +275,10 @@ client.on('qr', async (qr) => {
   if (!pairingCodeRequested) {
     pairingCodeRequested = true;
     try {
-      const code = await client.requestPairingCode('923024594578');
+      // v2.4: Pairing number Replit secret PAIRING_NUMBER se (Business number ke liye),
+      // warna purana personal number 923024594578. Number 92 se shuru, baghair +.
+      const pairingNumber = process.env.PAIRING_NUMBER || '923024594578';
+      const code = await client.requestPairingCode(pairingNumber);
       console.log('\n=== PAIRING CODE ===');
       console.log('Pairing code: ' + code);
       console.log('WhatsApp > Linked Devices > Link a Device > Link with phone number par ye code likhein.');
