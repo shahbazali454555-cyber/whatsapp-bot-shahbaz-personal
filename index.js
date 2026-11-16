@@ -1,5 +1,5 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v2.1 PERSONAL ONLY
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v4.0 PERSONAL ONLY (heavy version)
  * ================================================================
  * v2.1 fixes (2026-11-16 21:13 PKT):
  *  - Bot apne khud ke reply ko Shahbaz ka jawab samajh kar 5 minute
@@ -18,6 +18,30 @@
  *  - Real AI attach: Gemini (free) via GEMINI_API_KEY secret.
  *    Har message ka jawab pehle Gemini se, fail ho to rule-based.
  *  - "thoda detail mein batayein" wala lazy jawab bilkul band.
+ * v4.0 (2026-11-16 22:49 PKT) - heavy version:
+ *  - Conversation memory: har chat ki last 6 exchanges (user message +
+ *    bot reply) Gemini ko history ke saath bhejte hain (alternating
+ *    user/model turns), taake follow-up jaise "Lahore ka pocha h"
+ *    context me samajh aaye.
+ *  - Time intent: "time" kahin bhi ho to time batao (typo "kai" bhi
+ *    chalega). City naam ho (Lahore, Karachi, Islamabad, Rawalpindi,
+ *    Faisalabad, Multan, Peshawar, Quetta) to us city ka time, warna
+ *    Pakistan time. Poora Pakistan ek hi timezone (PKT) hai.
+ *  - Generic fallback: "Haan, bolo..." / "Haan, main yahin hoon, bolo."
+ *    sirf bare call (oye/hello/shahbaz?) par. AI fail ho to real
+ *    question par short: "Samajh nahi aaya, dobara likho."
+ *  - AI timeout 8s per model (unchanged) - busy Gemini fast fall-through.
+ * v2.4.4 (2026-11-16 22:47 PKT):
+ *  - SHORT replies only (Shahbaz ka 22:46 PKT rule): greeting salam/aoa ->
+ *    "Walaikum Assalam!" only, hi/hello/hey -> "Hi! Kaise ho?" only.
+ *    No "Assalam-o-Alaikum, main Shahbaz hoon", no "aap mujh se kuch
+ *    bhi pooch sakte hain", no "main ye hoon, main wo hoon".
+ *  - Gemini system instruction: short and point to point, 1-2 lines max.
+ *    Never introduce yourself, never say "Main Shahbaz hoon", never say
+ *    "aap mujh se kuch bhi pooch sakte hain" or "aap kaise hain" unless
+ *    the user asked how you are. Answer only the message itself.
+ *  - Rule-based intents: trailing questions/invitations removed, every
+ *    reply a short statement answering only the point.
  * v2.4.3 (2026-11-16 22:15 PKT):
  *  - FAST: intent (time/link/kon ho/kahan ho) pehle, AI ka wait nahi; delay 0.8-1.5s; AI timeout 8s.
  *  - Multi-AI chain: Gemini 3.8-flash -> Pollinations (free, bina key) -> DeepSeek ->
@@ -91,7 +115,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const AI_SYSTEM = 'You are Shahbaz, chatting with a friend on his personal WhatsApp in Roman English (Latin script, simple English mixed with Roman Urdu, the way Shahbaz speaks). Reply naturally like a real friend: short, warm, direct. Never repeat the user message back, never quote what they said, never say "tell me in more detail". Answer the message itself, improvise sensibly when it is unclear. Keep replies short, 1-3 lines usually. Never mention you are an AI, a bot, Gemini or ChatGPT.';
+const AI_SYSTEM = 'You are Shahbaz, chatting with a friend on his personal WhatsApp in Roman English (Latin script, simple English mixed with Roman Urdu, the way Shahbaz speaks). Reply short and point to point, 1-2 lines max. Never introduce yourself, never say \'Main Shahbaz hoon\', never say \'aap mujh se kuch bhi pooch sakte hain\' or \'aap kaise hain\' unless the user asked how you are. Answer only the message itself. No preamble, no filler. Never repeat the user message back, never quote what they said, never say "tell me in more detail". Improvise sensibly when it is unclear. Never mention you are an AI, a bot, Gemini or ChatGPT.';
 
 async function postChat(url, key, model, raw, extraHeaders) {
   const controller = new AbortController();
@@ -123,10 +147,17 @@ async function postChat(url, key, model, raw, extraHeaders) {
   }
 }
 
-async function callGemini(model, raw) {
+async function callGemini(model, raw, history) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
+    // v4.0: last 6 exchanges as alternating user/model turns, phir naya message
+    const contents = [];
+    (history || []).forEach(ex => {
+      contents.push({ role: 'user', parts: [{ text: ex.user }] });
+      contents.push({ role: 'model', parts: [{ text: ex.bot }] });
+    });
+    contents.push({ parts: [{ text: raw }] });
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
       {
@@ -134,7 +165,7 @@ async function callGemini(model, raw) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: AI_SYSTEM }] },
-          contents: [{ parts: [{ text: raw }] }],
+          contents: contents,
           generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
         }),
         signal: controller.signal
@@ -170,10 +201,10 @@ async function pollinationsReply(raw) {
   }
 }
 
-async function aiReply(raw) {
-  // 1. Gemini (free, key lagi hai)
+async function aiReply(raw, history) {
+  // 1. Gemini (free, key lagi hai) - v4.0: conversation history ke saath
   if (GEMINI_API_KEY) {
-    const g = await callGemini(GEMINI_MODEL, raw);
+    const g = await callGemini(GEMINI_MODEL, raw, history);
     if (g) return g;
   }
   // 2. Pollinations (free, bina key) - foran try karo
@@ -208,6 +239,14 @@ const botJustReplied = {}; // chatId -> time jab bot ne abhi reply bheja (taake 
 let readyAtMs = 0; // jab bot READY hua, us ka time - sirf us ke baad wale naye messages ka reply
 const seenIncomingIds = new Set(); // har incoming message id ka sirf ek dafa jawab
 let pairingCodeRequested = false;
+
+// v4.0: conversation memory - har chat ki last 6 exchanges (user message + bot reply)
+const chatHistory = {}; // chatId -> [{ user, bot }, ...] (max 6 exchanges)
+function remember(chatId, userText, botText) {
+  if (!chatHistory[chatId]) chatHistory[chatId] = [];
+  chatHistory[chatId].push({ user: userText, bot: botText });
+  while (chatHistory[chatId].length > 6) chatHistory[chatId].shift();
+}
 
 // v2.1 FIX: Bot kisi bhi error se band na ho - error aaye to sirf log kare, process zinda rahe
 process.on('unhandledRejection', (reason) => {
@@ -253,52 +292,59 @@ async function sendReply(msg, text) {
 // v2.4.3: intentReply - time/link/kon ho/kahan ho jaise sawal ka jawab
 // AI ka wait kiye baghair foran dega (fast reply). Koi intent na mile to null.
 function intentReply(text) {
+  // v4.0: "time" kahin bhi ho to time batao - typo "kai" bhi chalega.
+  // City naam ho to us city ka time, warna Pakistan time (poora Pakistan PKT).
+  if (has(text, 'time')) {
+    const now = new Date().toLocaleTimeString('en-PK', { timeZone: 'Asia/Karachi', hour: 'numeric', minute: '2-digit' });
+    const cities = ['lahore', 'karachi', 'islamabad', 'rawalpindi', 'faisalabad', 'multan', 'peshawar', 'quetta'];
+    const city = cities.find(c => text.includes(c));
+    if (city) {
+      const cityName = city.charAt(0).toUpperCase() + city.slice(1);
+      return cityName + ' me ' + now + ' ho raha hai.';
+    }
+    return 'Abhi Pakistan me ' + now + ' ho raha hai.';
+  }
   if (has(text, 'kya haal', 'kesay ho', 'kaise ho', 'how are you', 'haal kaisa', 'kese ho', 'kaisa hai')) {
-    return 'Alhamdulillah, main theek hoon! Aap sunayein, aap kaise hain? Aaj kya chal raha hai, sab theek hai na?';
+    return 'Alhamdulillah, main theek hoon.';
   }
   if (has(text, 'kahan ho', 'kidhar ho', 'kedar ho', 'kidar ho', 'where are you', 'kahan par ho', 'kaha ho', 'kedar ha', 'kidhar ha')) {
-    return 'Main yahin hoon, aapke message ka wait kar raha tha. Aap batayein, aap kahan ho? Ghar par ho ya bahar?';
+    return 'Main yahin hoon.';
   }
   if (has(text, 'kya kar rahe', 'kya kar raha', 'what are you doing', 'kya ho raha')) {
-    return 'Main yahan aap se baat kar raha hoon. Aap batayein, aap kya kar rahe ho? Aaj ka din kaisa guzra?';
+    return 'Bas aap se baat kar raha hoon.';
   }
   if (has(text, 'tum kaun', 'aap kaun', 'ap kon', 'tum kon', 'kon ho', 'who are you', 'apka naam', 'your name', 'tumhara naam', 'aapka naam')) {
-    return 'Main Shahbaz hoon. Aap se baat kar raha hoon, aap batayein, aap kaun hain? Aapka naam kya hai?';
-  }
-  // v2.4.2: time pooche to asli time batao (Pakistan time)
-  if (has(text, 'time kia', 'time kya', 'time ho raha', 'kitne baj', 'kitna time', 'waqt kia', 'waqt kya', 'what time', 'time bata')) {
-    const now = new Date().toLocaleTimeString('en-PK', { timeZone: 'Asia/Karachi', hour: 'numeric', minute: '2-digit' });
-    return 'Abhi Pakistan me ' + now + ' ho raha hai.';
+    return 'Main Shahbaz hoon.';
   }
   if (has(text, 'good morning', 'subah bakhair', 'good night', 'shab bakhair')) {
     if (has(text, 'night', 'shab')) {
-      return 'Shab bakhair! Aap bhi araam se soyein, kal phir baat karte hain. Allah Hafiz!';
+      return 'Shab bakhair!';
     }
-    return 'Subah bakhair! Aap ko bhi bohat bohat mubarak. Aaj ka din aapka acha guzre. Aaj kya plan hai?';
+    return 'Subah bakhair!';
   }
   if (has(text, 'joke', 'mazak', 'funny', 'hasao', 'hansi')) {
-    return "Ok, ek simple si baat suno: Ek dafa ek banda WhatsApp par likhta hai 'Hi', main jawab deta hoon 'Hello, kaise ho?' Banda kehta hai 'Bas aap se baat karni thi.' Main kehta hoon 'To phir baat karte hain!' Aap bhi batayein, aur kya sunna hai?";
+    return 'Teacher: "Tum homework kyun nahi laye?" Student: "Sir, WhatsApp par bhej diya tha."';
   }
   if (has(text, 'bore', 'bor ho raha', 'boring')) {
-    return 'Bore ho rahe ho? Chalo thori baat karte hain. Aap mujhe batayein, aapko kis cheez mein interest hai? Cricket, movies, ya kuch aur? Main sun raha hoon.';
+    return 'Chalo thori baat karte hain.';
   }
   if (has(text, 'khana khaya', 'kha liya', 'bhook')) {
-    return 'Khana to bohat zaroori hai, aap ne kha liya? Main to bas aap se baat kar raha hoon. Aap batayein, aaj kya khaya?';
+    return 'Khana zaroor kha lena.';
   }
   if (has(text, 'neend', 'sleep', 'thak gaya', 'tired')) {
-    return 'Thak gaye ho to thora araam kar lo, phir baat karte hain. Main yahin hoon, jab bhi message karo ge, reply kar doon ga.';
+    return 'Thora araam kar lo.';
   }
   if (has(text, 'shukriya', 'thanks', 'thank you')) {
-    return 'Aapka bohat shukriya! Aap se baat karke acha laga. Aur kuch poochna hai to bas likh dein.';
+    return 'Koi baat nahi.';
   }
   if (has(text, 'allah hafiz', 'bye', 'khuda hafiz', 'goodbye', 'chalta hoon')) {
-    return 'Allah Hafiz! Jab bhi zaroorat ho, dobara message karein. Main yahin hoon.';
+    return 'Allah Hafiz!';
   }
   if (has(text, 'ok', 'theek hai', 'acha', 'sahi hai', 'han', 'haan', 'yes')) {
-    return 'Theek hai! Acha laga aap se baat karke. Aur kuch batana hai ya bas aise hi baat karni hai? Main yahin hoon, aap freely baat karein.';
+    return 'Theek hai.';
   }
   if (has(text, 'aur sunao', 'aur batao', 'kya chal raha')) {
-    return 'Sab theek hai, Alhamdulillah. Aap sunayein, aapke paas koi nayi baat hai? Aaj kya kiya aap ne?';
+    return 'Sab theek hai, Alhamdulillah.';
   }
 
   // v2.4: "aur kya kehna chahte ho" wala lazy sawal bilkul band (21:36 PKT screenshot) -
@@ -327,16 +373,17 @@ function intentReply(text) {
 function freeReply(raw, text) {
   const intent = intentReply(text);
   if (intent) return intent;
-  const replies = [
-    'Haan, bolo, main sun raha hoon.',
-    'Theek hai, aage bolo.',
-    'Haan, main yahin hoon, bolo.',
-    'Haan, bolo, kya baat hai?',
-  ];
-  if (raw.length < 25) {
+  // v4.0: "Haan, bolo, main sun raha hoon." / "Haan, main yahin hoon, bolo."
+  // sirf bare call (oye/hello/shahbaz?) par. Real question par AI fail ho to:
+  const bareCall = ['oye', 'oey', 'suno', 'sun', 'bolo', 'shahbaz', 'shahbaz?', 'hello', 'hi', 'hey', 'aoa', 'salam'].includes(text);
+  if (bareCall) {
+    const replies = [
+      'Haan, bolo, main sun raha hoon.',
+      'Haan, main yahin hoon, bolo.',
+    ];
     return replies[Math.floor(Math.random() * replies.length)];
   }
-  return replies[Math.floor(Math.random() * replies.length)];
+  return 'Samajh nahi aaya, dobara likho.';
 }
 
 async function handleMessage(msg) {
@@ -353,9 +400,15 @@ async function handleMessage(msg) {
     return;
   }
 
-  // Hi / Salam - sirf personal welcome, NO menu, NO order
-  if ((has(text, 'hi') && text.length < 10) || ['hello', 'hey', 'salam', 'aoa', 'assalam', 'assalam-o-alaikum'].includes(text)) {
-    await sendReply(msg, `Assalam-o-Alaikum! Main ${BOT_NAME} hoon.\n\nAap kaise hain? Aap mujh se kuch bhi pooch sakte ho, ya bas aise hi baat kar sakte ho. Main yahin hoon.`);
+  // v2.4.4: short greetings only - salam/aoa -> "Walaikum Assalam!", hi/hello/hey -> "Hi! Kaise ho?". No name, no intro, no invitation.
+  if (['salam', 'aoa', 'assalam', 'assalam-o-alaikum', 'salam alaikum'].includes(text)) {
+    await sendReply(msg, 'Walaikum Assalam!');
+    remember(chatId, raw, 'Walaikum Assalam!');
+    return;
+  }
+  if ((has(text, 'hi') && text.length < 10) || ['hello', 'hey'].includes(text)) {
+    await sendReply(msg, 'Hi! Kaise ho?');
+    remember(chatId, raw, 'Hi! Kaise ho?');
     return;
   }
 
@@ -363,14 +416,19 @@ async function handleMessage(msg) {
   const intent = intentReply(text);
   if (intent) {
     await sendReply(msg, intent);
+    remember(chatId, raw, intent);
     return;
   }
-  const smart = await aiReply(raw);
+  // v4.0: Gemini ko is chat ki last 6 exchanges ki history ke saath bhejo
+  const smart = await aiReply(raw, chatHistory[chatId] || []);
   if (smart) {
     await sendReply(msg, smart);
+    remember(chatId, raw, smart);
     return;
   }
-  await sendReply(msg, freeReply(raw, text));
+  const fallback = freeReply(raw, text);
+  await sendReply(msg, fallback);
+  remember(chatId, raw, fallback);
 }
 
 const client = new Client({
