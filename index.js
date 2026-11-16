@@ -1,6 +1,11 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v11.0 PERSONAL ONLY (heavy version)
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.0 SPEED version PERSONAL ONLY (heavy version)
  * ================================================================
+ * v12.0 SPEED (2026-11-17 00:38 PKT) - speed release:
+ * - No artificial reply delay (REPLY_DELAY 0); AI timeout 12s -> 3s;
+ *   Pollinations-default FIRST, then Gemini, then Pollinations-openai;
+ *   Pollinations single attempt, no 20s/3s retry waits. All else unchanged
+ *   from v11.0.
  * v11.0 (2026-11-16 23:18 PKT) - heavy version:
  *  - ROOT CAUSE (diagnosed live from Replit Shell): Gemini 3.8-flash free
  *    tier quota exhausted (HTTP 429, 20/day, retry ~13h54m); Pollinations
@@ -115,16 +120,16 @@ const qrcode = require('qrcode-terminal');
 const BOT_NAME = 'Shahbaz';
 const REPLY_TO_GROUPS = false;
 const HUMAN_PAUSE_MINUTES = 5;
-const REPLY_DELAY_MIN = 800;
-const REPLY_DELAY_MAX = 1500;
-// v11.0: per-model timeout 8s -> 12s (Pollinations sometimes needs >8s)
-const AI_TIMEOUT_MS = 12000;
+const REPLY_DELAY_MIN = 0;
+const REPLY_DELAY_MAX = 0;
+// v12.0 SPEED: per-model timeout 12s -> 3s
+const AI_TIMEOUT_MS = 3000;
 // v2.3: Real AI - Gemini (free) - key Replit Secrets me GEMINI_API_KEY naam se
 // Key na ho ya AI fail ho jaye to neeche wala rule-based freeReply chalega
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-// v2.4.3: sirf 3.8-flash (2.5-flash band hai, 404). AI chain: Gemini -> Pollinations
-// (free, bina key) -> DeepSeek -> Groq -> OpenRouter -> ChatGPT (paid, key ho to).
+// v2.4.3: sirf 3.8-flash (2.5-flash band hai, 404). v12.0 SPEED AI chain: Pollinations-default -> Gemini -> Pollinations-openai
+// -> DeepSeek -> Groq -> OpenRouter -> ChatGPT (paid, key ho to).
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
@@ -205,41 +210,37 @@ async function callGemini(model, raw, history) {
   }
 }
 
-// v11.0: Pollinations - SHORT prompt, DEFAULT model first (live test: 0.39s, correct).
+// v12.0 SPEED: Pollinations - SHORT prompt, DEFAULT model first (live test: 0.39s, correct).
 // v4.0 sent the whole AI_SYSTEM with ?model=openai: 16.2s, aborted at 8s, never answered.
 async function pollinationsReply(raw, useOpenAiModel) {
-  // v11.0: free tier allows about 1 reply per 45s per IP - on 402/429, wait 20s and retry once.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
-    try {
-      const prompt = 'Reply short, 1-2 lines, Roman English: ' + raw;
-      const url = 'https://text.pollinations.ai/' + encodeURIComponent(prompt) + (useOpenAiModel ? '?model=openai' : '');
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) {
-        console.log('Pollinations error:', res.status, useOpenAiModel ? 'openai' : 'default');
-        if ((res.status === 402 || res.status === 429) && attempt === 0) { await sleep(20000); continue; }
-        return null;
-      }
-      const text = (await res.text() || '').trim();
-      if (!text || text.startsWith('<') || /free limit reached/i.test(text)) return null;
-      return text.slice(0, 500);
-    } catch (e) {
-      clearTimeout(timer);
-      console.log('Pollinations error:', useOpenAiModel ? 'openai' : 'default', e.message);
-      if (attempt === 0) { await sleep(3000); continue; }
+  // v12.0 SPEED: single attempt only - on 402/429 or error return null immediately, no retry waits.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  try {
+    const prompt = 'Reply short, 1-2 lines, Roman English: ' + raw;
+    const url = 'https://text.pollinations.ai/' + encodeURIComponent(prompt) + (useOpenAiModel ? '?model=openai' : '');
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      console.log('Pollinations error:', res.status, useOpenAiModel ? 'openai' : 'default');
       return null;
     }
+    const text = (await res.text() || '').trim();
+    if (!text || text.startsWith('<') || /free limit reached/i.test(text)) return null;
+    return text.slice(0, 500);
+  } catch (e) {
+    clearTimeout(timer);
+    console.log('Pollinations error:', useOpenAiModel ? 'openai' : 'default', e.message);
+    return null;
   }
-  return null;
 }
 
 async function aiReply(raw, history) {
   // v11.0: EVERY step in its own try/catch - one model failure never kills the chain.
   const steps = [];
-  if (GEMINI_API_KEY) steps.push(['Gemini', () => callGemini(GEMINI_MODEL, raw, history)]);
+  // v12.0 SPEED: Pollinations-default FIRST, then Gemini, then Pollinations-openai.
   steps.push(['Pollinations-default', () => pollinationsReply(raw, false)]);
+  if (GEMINI_API_KEY) steps.push(['Gemini', () => callGemini(GEMINI_MODEL, raw, history)]);
   steps.push(['Pollinations-openai', () => pollinationsReply(raw, true)]);
   if (DEEPSEEK_API_KEY) steps.push(['DeepSeek', () => postChat('https://api.deepseek.com/v1/chat/completions', DEEPSEEK_API_KEY, 'deepseek-chat', raw)]);
   if (GROQ_API_KEY) steps.push(['Groq', () => postChat('https://api.groq.com/openai/v1/chat/completions', GROQ_API_KEY, 'llama-3.3-70b-versatile', raw)]);
