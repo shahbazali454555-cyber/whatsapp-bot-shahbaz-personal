@@ -1,6 +1,15 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v2.0 PERSONAL ONLY
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v2.1 PERSONAL ONLY
  * ================================================================
+ * v2.1 fixes (2026-11-16 21:13 PKT):
+ *  - Bot apne khud ke reply ko Shahbaz ka jawab samajh kar 5 minute
+ *    ka pause nahi lagayega (botJustReplied guard).
+ *  - "auth timeout" jaisa error aane par bot band nahi hoga
+ *    (unhandledRejection / uncaughtException handlers + start.sh
+ *    auto-restart loop).
+ *  - SIRF naye messages ka reply (Shahbaz ka 20:19 PKT rule):
+ *    bot READY hone se pehle ke purane messages aur dobara aane
+ *    wale messages ignore, har message ka jawab sirf ek dafa.
  * Ye bot Shahbaz ke PERSONAL WhatsApp number par khud reply dega.
  * Jo bhi banda, kisi bhi number se, koi bhi message bheje,
  * bot us ko apni marzi se free personal reply dega,
@@ -56,7 +65,18 @@ const REPLY_DELAY_MAX = 5000;
 
 const humanPause = {};
 const botSentIds = new Set();
+const botJustReplied = {}; // chatId -> time jab bot ne abhi reply bheja (taake apne reply ko Shahbaz ka jawab na samjha jaye)
+let readyAtMs = 0; // jab bot READY hua, us ka time - sirf us ke baad wale naye messages ka reply
+const seenIncomingIds = new Set(); // har incoming message id ka sirf ek dafa jawab
 let pairingCodeRequested = false;
+
+// v2.1 FIX: Bot kisi bhi error se band na ho - error aaye to sirf log kare, process zinda rahe
+process.on('unhandledRejection', (reason) => {
+  console.log('Unhandled rejection (bot band nahi hoga):', reason && reason.message ? reason.message : reason);
+});
+process.on('uncaughtException', (e) => {
+  console.log('Uncaught exception (bot band nahi hoga):', e && e.message ? e.message : e);
+});
 
 function clean(text) {
   return (text || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -74,6 +94,9 @@ function randomDelay() {
 async function sendReply(msg, text) {
   try {
     const chat = await msg.getChat();
+    // v2.1 FIX: reply bhejne se PEHLE hi mark kar do, taake message_create
+    // is ko Shahbaz ka khud ka jawab samajh kar 5 minute ka pause na laga de
+    botJustReplied[msg.from] = Date.now();
     await chat.sendStateTyping();
     await sleep(randomDelay());
     const sent = await msg.reply(text);
@@ -199,6 +222,7 @@ client.on('code', (code) => {
 });
 
 client.on('ready', () => {
+  readyAtMs = Date.now();
   console.log('\nBot READY hai! Ab Shahbaz ke personal number par har aane wale message ka auto reply chalega.');
   console.log('Band karne ke liye Ctrl+C dabayein.');
 });
@@ -211,6 +235,9 @@ client.on('message_create', async (msg) => {
     if (!msg.fromMe) return;
     if (msg.id && msg.id._serialized && botSentIds.has(msg.id._serialized)) return;
     const chatId = msg.to || msg.from;
+    // v2.1 FIX: Bot ne abhi (10 second ke andar) khud reply bheja ho to
+    // ye Shahbaz ka jawab NAHI hai - pause mat lagao
+    if (chatId && botJustReplied[chatId] && Date.now() - botJustReplied[chatId] < 10000) return;
     if (chatId && !chatId.endsWith('@g.us')) {
       humanPause[chatId] = Date.now() + HUMAN_PAUSE_MINUTES * 60 * 1000;
       console.log('Shahbaz ne khud jawab diya, bot paused for:', chatId);
@@ -228,6 +255,18 @@ client.on('message', async (msg) => {
       await sendReply(msg, 'Aapka message mil gaya hai. Aap apni baat likh dein, main jawab doon ga.');
       return;
     }
+    // v2.1: SIRF naye messages ka reply - purane / dobara aane wale messages ignore
+    // (Shahbaz ka 20:19 PKT rule: purane message ka reply nahi, ek hi message sab ko nahi)
+    if (msg.timestamp) {
+      const msgMs = msg.timestamp * 1000;
+      if (readyAtMs && msgMs < readyAtMs - 5000) return; // bot READY hone se pehle ka message
+      if (Date.now() - msgMs > 120000) return; // 2 minute se purana message: stale replay
+    }
+    const incomingId = msg.id && msg.id._serialized;
+    if (incomingId) {
+      if (seenIncomingIds.has(incomingId)) return; // is message ka jawab ek dafa ho chuka
+      seenIncomingIds.add(incomingId);
+    }
     console.log(`Incoming from ${msg.from}: ${msg.body.slice(0, 120)}`);
     await handleMessage(msg);
   } catch (e) {
@@ -235,4 +274,4 @@ client.on('message', async (msg) => {
   }
 });
 
-client.initialize();
+client.initialize().catch((e) => console.log('Initialize error:', e && e.message ? e.message : e));
