@@ -1,6 +1,7 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.2 version PERSONAL ONLY (heavy version)
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.3 version PERSONAL ONLY (heavy version)
  * ================================================================
+ * v12.3 (2026-11-17 08:33 PKT) - varied thk/good/kasa replies: pools of 3-4 short replies, per-chat rotation, never repeats the last bot reply in the same chat, never re-asks 'aur sunao?' right after asking it. All v12.2 behaviour unchanged.
  * v12.2 (2026-11-17 08:20 PKT) - good/ok/thanks short replies, no fallback for short replies:
  * v12.1 (2026-11-17 01:00 PKT) - greeting-follow-up fix:
  * - Rule-based intents (no AI wait) for thk/theek and ap kasa/kaise/kese/kesy ho,
@@ -308,6 +309,7 @@ async function sendReply(msg, text) {
     await chat.sendStateTyping();
     await sleep(randomDelay());
     const sent = await msg.reply(text);
+    if (msg.from) lastBotReplyByChat[msg.from] = text;
     if (sent && sent.id && sent.id._serialized) botSentIds.add(sent.id._serialized);
     await chat.clearState();
     return sent;
@@ -342,6 +344,30 @@ function hasWord(text, words) {
   const toks = text.split(/[^a-z]+/).filter(Boolean);
   return words.some(w => toks.includes(w));
 }
+// v12.3: varied short replies - each intent has a POOL, never one fixed line.
+// pickVaried rotates per chat and never returns the immediately previous bot
+// reply in that chat; it also never re-asks 'aur sunao?' right after asking it.
+const THK_POOL = ['Acha, aur sunao?', 'Good, acha laga sun kar.', 'Theek hai, kia kar rahe ho?', 'Acha, khush raho.'];
+const GOOD_POOL = ['Acha, aur batao?', 'Good, kia chal raha hai?', 'Acha laga, khush raho.'];
+const KASA_POOL = ['Me bhi thk ho, ap sunao?', 'Me bhi thk ho, tum batao kia chal raha hai?'];
+const lastBotReplyByChat = {}; // chatId -> last bot reply sent in that chat
+const variedIndexByChat = {}; // chatId|poolKey -> next pool index (round-robin)
+function pickVaried(poolKey, pool, chatId) {
+  const chat = chatId || 'default';
+  const last = lastBotReplyByChat[chat] || '';
+  let candidates = pool.filter((r) => r !== last && !(last.includes('aur sunao') && r.includes('aur sunao')));
+  const hist = (typeof chatHistory !== 'undefined' && chatHistory[chat]) || [];
+  const recentBot = hist.slice(-3).map((h) => h.bot || '');
+  candidates = candidates.filter((r) => !recentBot.includes(r));
+  if (!candidates.length) candidates = pool.filter((r) => r !== last);
+  if (!candidates.length) candidates = pool.slice();
+  const key = chat + '|' + poolKey;
+  const start = variedIndexByChat[key] || 0;
+  const choice = candidates[start % candidates.length];
+  variedIndexByChat[key] = start + 1;
+  lastBotReplyByChat[chat] = choice;
+  return choice;
+}
 function dateDayReply(text) {
   let word = null;
   if (hasWord(text, ['aaj'])) word = 'aaj';
@@ -369,7 +395,7 @@ function greetingReply(text) {
 
 // v2.4.3: intentReply - time/link/kon ho/kahan ho jaise sawal ka jawab
 // AI ka wait kiye baghair foran dega (fast reply). Koi intent na mile to null.
-function intentReply(text) {
+function intentReply(text, chatId) {
   const dd = dateDayReply(text);
   if (dd) return dd;
   // v4.0: "time" kahin bhi ho to time batao - typo "kai" bhi chalega.
@@ -391,11 +417,11 @@ function intentReply(text) {
   // How-are-you first, so a combined 'Me thk ho ap kasa ho' answers as
   // 'Me bhi thk ho, ap sunao?' instead of the thk-only reply.
   if (has(text, 'kasa ho', 'kesy ho', 'kaisa ho', 'kaise ho', 'kese ho', 'kesay ho', 'kasa hai', 'kesy hai', 'kaisa hai', 'kya haal', 'kia haal', 'haal kaisa', 'haal kesa', 'how are you')) {
-    return 'Me bhi thk ho, ap sunao?';
+    return pickVaried('kasa', KASA_POOL, chatId);
   }
   // v12.1: 'thk / thik / theek' - user is fine, reply short, no AI wait.
   if (has(text, 'thk', 'thik', 'theek')) {
-    return 'Acha, aur sunao?';
+    return pickVaried('thk', THK_POOL, chatId);
   }
   if (has(text, 'kya haal', 'kesay ho', 'kaise ho', 'how are you', 'haal kaisa', 'kese ho', 'kaisa hai')) {
     return 'Alhamdulillah, main theek hoon.';
@@ -415,12 +441,12 @@ function intentReply(text) {
     }
     return 'Subah bakhair!';
   }
-  // v12.2 short positive / acknowledgement replies - rule-based, no AI wait.
+  // v12.3 short positive / acknowledgement replies - VARIED pools, rule-based, no AI wait.
   // hasWord() matches 'good' anywhere in the message, e.g. 'mana likha good'.
   // Placed AFTER 'good morning' / 'good night' above, so those greetings still win.
   // 'ok' / 'han' / 'haan' / 'yes' / 'shukriya' / 'thanks' / 'theek hai' / 'acha hai'
   // were already rule-based in v12.1 ('Theek hai.' / 'Koi baat nahi.') and stay unchanged.
-  if (hasWord(text, ['good', 'gud', 'goood', 'great', 'fine', 'okay', 'okey', 'okie', 'nice', 'zabardast', 'bilkul'])) return 'Acha, aur sunao?';
+  if (hasWord(text, ['good', 'gud', 'goood', 'great', 'fine', 'okay', 'okey', 'okie', 'nice', 'zabardast', 'bilkul'])) return pickVaried('good', GOOD_POOL, chatId);
   if (has(text, 'joke', 'mazak', 'funny', 'hasao', 'hansi')) {
     return 'Teacher: "Tum homework kyun nahi laye?" Student: "Sir, WhatsApp par bhej diya tha."';
   }
@@ -469,8 +495,8 @@ function intentReply(text) {
   return null;
 }
 
-function freeReply(raw, text) {
-  const intent = intentReply(text);
+function freeReply(raw, text, chatId) {
+  const intent = intentReply(text, chatId);
   if (intent) return intent;
   // v4.0: "Haan, bolo, main sun raha hoon." / "Haan, main yahin hoon, bolo."
   // sirf bare call (oye/hello/shahbaz?) par. Real question par AI fail ho to:
@@ -508,7 +534,7 @@ async function handleMessage(msg) {
   }
 
   // v2.4.3 FAST: pehle intent (time/link/kon ho) foran, phir AI, phir generic
-  const intent = intentReply(text);
+  const intent = intentReply(text, chatId);
   if (intent) {
     await sendReply(msg, intent);
     remember(chatId, raw, intent);
@@ -521,13 +547,13 @@ async function handleMessage(msg) {
     remember(chatId, raw, smart);
     return;
   }
-  const fallback = freeReply(raw, text);
+  const fallback = freeReply(raw, text, chatId);
   await sendReply(msg, fallback);
   remember(chatId, raw, fallback);
 }
 
 async function runSelfTest() {
-  console.log('=== v12.2 SELFTEST ===');
+  console.log('=== v12.3 SELFTEST ===');
   const p = karachiParts(new Date());
   console.log('Karachi today (live):', p.weekday, p.day, p.month, p.year);
   const tests = ['Kal kia ha', 'Mana bola Kal kai din ha', 'Kal kya hai', 'Kal konsa din hai', 'Aaj kia din hai', 'Aaj date kia hai', 'Kal date kia hai', 'Parso kia din hai', 'Lahore me time kia ho raha hai', 'kahan ho', 'kon ho', 'Thk', 'Me thk ho ap kasa ho', 'ap kasa ho', 'ap kesy ho', 'main theek hoon', 'aur sunao', 'kia chal raha hai', 'kya haal hai', 'haal kaisa hai', 'Good', 'Mana likha good', 'Great', 'Not good', 'Theek nahi', 'Thanks', 'Ok'];
@@ -538,6 +564,30 @@ async function runSelfTest() {
   console.log('IN: AOA => OUT:', greetingReply(clean('AOA')));
   console.log('IN: hi => OUT:', greetingReply(clean('hi')));
   console.log('IN: voice message => OUT:', VOICE_REPLY);
+  console.log('--- v12.3 SEQUENCE TEST (one chat, Shahbaz screenshot case) ---');
+  const seqChat = 'selftest-seq-chat';
+  const seq = ['Hi', 'G thk', 'Or me thk', 'Me thk', 'Good'];
+  const seqOut = [];
+  for (const t of seq) {
+    const out = greetingReply(clean(t)) || intentReply(clean(t), seqChat) || '(no intent -> AI)';
+    seqOut.push(out);
+    console.log('SEQ IN:', t, '=> OUT:', out);
+    remember(seqChat, t, out);
+  }
+  let seqRepeat = false;
+  for (let i = 1; i < seqOut.length; i++) if (seqOut[i] === seqOut[i - 1]) seqRepeat = true;
+  console.log('SEQ CHECK: all identical?', new Set(seqOut).size === 1, '| any consecutive repeat?', seqRepeat, '| distinct replies:', new Set(seqOut).size, '/', seqOut.length);
+  if (seqRepeat || new Set(seqOut).size === 1) console.log('SEQ CHECK: FAIL - bot still repeats');
+  else console.log('SEQ CHECK: PASS - replies vary, no consecutive repeat');
+  const kasa1 = intentReply(clean('Kasa ho'), seqChat);
+  const kasa2 = intentReply(clean('Kasa ho'), seqChat);
+  console.log('KASA REPEAT CHECK: 1st:', kasa1, '| 2nd:', kasa2, '| different?', kasa1 !== kasa2);
+  const thkOut = intentReply(clean('Thk'), 'selftest-thk-chat');
+  console.log('THK CHECK: Thk =>', thkOut, '| in THK_POOL?', THK_POOL.includes(thkOut));
+  const goodOut = intentReply(clean('Good'), 'selftest-good-chat');
+  console.log('GOOD CHECK: Good =>', goodOut, '| in GOOD_POOL?', GOOD_POOL.includes(goodOut));
+  console.log('KAL CHECK: Kal kia ha =>', intentReply(clean('Kal kia ha'), 'selftest-kal-chat'));
+  console.log('NOTGOOD CHECK: Not good =>', intentReply(clean('Not good'), 'selftest-ng-chat'));
   console.log('--- AI chain live test: Kal kia hai? ---');
   const ai = await aiReply('Kal kia hai?', []);
   console.log('AI OUT:', ai || '(AI chain failed)');
