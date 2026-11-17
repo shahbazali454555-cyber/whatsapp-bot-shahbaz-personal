@@ -1,6 +1,7 @@
 /**
- * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.1 version PERSONAL ONLY (heavy version)
+ * Shahbaz - Personal WhatsApp Auto-Reply Bot - v12.2 version PERSONAL ONLY (heavy version)
  * ================================================================
+ * v12.2 (2026-11-17 08:20 PKT) - good/ok/thanks short replies, no fallback for short replies:
  * v12.1 (2026-11-17 01:00 PKT) - greeting-follow-up fix:
  * - Rule-based intents (no AI wait) for thk/theek and ap kasa/kaise/kese/kesy ho,
  *   matched anywhere in the message, so the fallback never fires for greetings.
@@ -383,6 +384,9 @@ function intentReply(text) {
     }
     return 'Abhi Pakistan me ' + now + ' ho raha hai.';
   }
+  // v12.2 short negative replies - checked FIRST, before 'thk' / 'good' below,
+  // so 'not good' does not hit the positive intent and 'theek nahi' does not hit 'thk'.
+  if (has(text, 'not good', 'theek nahi', 'thek nahi', 'thik nahi', 'acha nahi', 'nahi thk', 'nahi theek') || hasWord(text, ['bad', 'bura'])) return 'Kia hua? Batao.';
   // v12.1: greeting follow-ups, matched anywhere in the message (no AI wait).
   // How-are-you first, so a combined 'Me thk ho ap kasa ho' answers as
   // 'Me bhi thk ho, ap sunao?' instead of the thk-only reply.
@@ -411,6 +415,12 @@ function intentReply(text) {
     }
     return 'Subah bakhair!';
   }
+  // v12.2 short positive / acknowledgement replies - rule-based, no AI wait.
+  // hasWord() matches 'good' anywhere in the message, e.g. 'mana likha good'.
+  // Placed AFTER 'good morning' / 'good night' above, so those greetings still win.
+  // 'ok' / 'han' / 'haan' / 'yes' / 'shukriya' / 'thanks' / 'theek hai' / 'acha hai'
+  // were already rule-based in v12.1 ('Theek hai.' / 'Koi baat nahi.') and stay unchanged.
+  if (hasWord(text, ['good', 'gud', 'goood', 'great', 'fine', 'okay', 'okey', 'okie', 'nice', 'zabardast', 'bilkul'])) return 'Acha, aur sunao?';
   if (has(text, 'joke', 'mazak', 'funny', 'hasao', 'hansi')) {
     return 'Teacher: "Tum homework kyun nahi laye?" Student: "Sir, WhatsApp par bhej diya tha."';
   }
@@ -517,10 +527,10 @@ async function handleMessage(msg) {
 }
 
 async function runSelfTest() {
-  console.log('=== v12.1 SELFTEST ===');
+  console.log('=== v12.2 SELFTEST ===');
   const p = karachiParts(new Date());
   console.log('Karachi today (live):', p.weekday, p.day, p.month, p.year);
-  const tests = ['Kal kia ha', 'Mana bola Kal kai din ha', 'Kal kya hai', 'Kal konsa din hai', 'Aaj kia din hai', 'Aaj date kia hai', 'Kal date kia hai', 'Parso kia din hai', 'Lahore me time kia ho raha hai', 'kahan ho', 'kon ho', 'Thk', 'Me thk ho ap kasa ho', 'ap kasa ho', 'ap kesy ho', 'main theek hoon', 'aur sunao', 'kia chal raha hai', 'kya haal hai', 'haal kaisa hai'];
+  const tests = ['Kal kia ha', 'Mana bola Kal kai din ha', 'Kal kya hai', 'Kal konsa din hai', 'Aaj kia din hai', 'Aaj date kia hai', 'Kal date kia hai', 'Parso kia din hai', 'Lahore me time kia ho raha hai', 'kahan ho', 'kon ho', 'Thk', 'Me thk ho ap kasa ho', 'ap kasa ho', 'ap kesy ho', 'main theek hoon', 'aur sunao', 'kia chal raha hai', 'kya haal hai', 'haal kaisa hai', 'Good', 'Mana likha good', 'Great', 'Not good', 'Theek nahi', 'Thanks', 'Ok'];
   for (const t of tests) {
     const out = intentReply(clean(t)) || '(no intent -> AI)';
     console.log('IN:', t, '=> OUT:', out);
